@@ -1,0 +1,29 @@
+# Data — never tracked. The lesson from the previous repo: results/ was
+# gitignored only AFTER its contents were committed, so the ignore did nothing
+# and outputs drifted inside version control.
+data/raw/
+data/interim/
+data/labels/
+data/external/
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+
+# Outputs
+*.mp4
+*.avi
+*.png
+*.jpg
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
