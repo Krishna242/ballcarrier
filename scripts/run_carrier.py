@@ -85,7 +85,7 @@ def main():
 
     if args.harvest:
         print("[+]   harvesting HUD indicator labels")
-        reticle, _ = hud.harvest(frames)
+        reticle, _ = hud.harvest(frames, per_frame)
         check = hud.validate(reticle)
         print(f"      {check}")
         summary["harvest"] = check

@@ -49,8 +49,36 @@ def static_occupancy(frames):
     return acc / max(len(frames), 1)
 
 
-def find_reticle(frame, static_mask):
-    """Locate the reticle in one frame. Returns (cx, cy, w, h) or None."""
+FOOT_DY_ABOVE = 35     # px the reticle may sit above a player's box bottom
+FOOT_DY_BELOW = 45     # ...and below it
+FOOT_DX_PAD = 25       # horizontal slack around the box
+
+
+def _at_a_players_feet(cx, cy, boxes):
+    """Is this candidate positioned where a reticle is drawn -- at the feet of
+    a detected player?
+
+    This is the constraint no HUD element can satisfy, and it is what the
+    earlier colour-and-motion filters lacked. Requiring only 'saturated blue'
+    matched the TURBO meter; adding 'and it moves' then matched the animating
+    scoreboard. Anchoring to a player box rules out both, because interface
+    furniture is not drawn under a tracked person.
+    """
+    for (x1, _, x2, y2) in boxes.values():
+        if x1 - FOOT_DX_PAD <= cx <= x2 + FOOT_DX_PAD and \
+           y2 - FOOT_DY_ABOVE <= cy <= y2 + FOOT_DY_BELOW:
+            return True
+    return False
+
+
+def find_reticle(frame, static_mask, boxes=None):
+    """Locate the reticle in one frame. Returns (cx, cy, w, h) or None.
+
+    `boxes` maps track id -> xyxy for this frame. It is optional only so the
+    function can be exercised in isolation; in normal use it should always be
+    supplied, because the player-anchoring test below is what makes this
+    detector trustworthy rather than merely confident.
+    """
     m = colour_mask(frame)
     m[static_mask > STATIC_FRAC] = 0
 
@@ -63,15 +91,22 @@ def find_reticle(frame, static_mask):
         x, y, w, h = cv2.boundingRect(c)
         if w / max(h, 1) < MIN_ASPECT:
             continue
+        cx, cy = x + w / 2.0, y + h / 2.0
+        if boxes is not None and not _at_a_players_feet(cx, cy, boxes):
+            continue
         if best is None or area > best[0]:
-            best = (area, x + w / 2.0, y + h / 2.0, w, h)
+            best = (area, cx, cy, w, h)
     return None if best is None else best[1:]
 
 
-def harvest(frames):
+def harvest(frames, per_frame_boxes=None):
     """Per-frame reticle position across a clip. None where not found."""
     static = static_occupancy(frames)
-    return [find_reticle(f, static) for f in frames], static
+    out = []
+    for t, f in enumerate(frames):
+        boxes = per_frame_boxes[t] if per_frame_boxes is not None else None
+        out.append(find_reticle(f, static, boxes))
+    return out, static
 
 
 def assign_to_track(reticle, per_frame_boxes):
@@ -87,7 +122,7 @@ def assign_to_track(reticle, per_frame_boxes):
             continue
         cx, cy, _, _ = r
         best, best_d = None, 1e9
-        for tid, (x1, y1, x2, y2) in per_frame_boxes[t].items():
+        for tid, (x1, _, x2, y2) in per_frame_boxes[t].items():
             if not (x1 - 20 <= cx <= x2 + 20):
                 continue
             d = abs(y2 - cy)
