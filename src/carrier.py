@@ -123,6 +123,56 @@ def viterbi(scores, switch_penalty=SWITCH_PENALTY):
     return path
 
 
+def enforce_dwell(path, min_dwell):
+    """Absorb carrier runs shorter than `min_dwell` frames into their neighbour.
+
+    The switch penalty makes a change expensive but never impossible, so the
+    decoded path still contains one- and two-frame flickers, and each of those
+    is scored as a possession change followed immediately by another one. That
+    is what drives change precision to 0.05: the method announces hundreds of
+    turnovers in a clip that contains three.
+
+    A dwell floor states the thing the penalty only implies -- nobody carries
+    the ball for a twelfth of a second. It is a hard constraint rather than a
+    cost, so no amount of emission confidence can buy a flicker.
+
+    Runs are absorbed shortest-first, because collapsing a long run into a
+    short neighbour would be the wrong direction, and the pass is repeated
+    until nothing changes: absorbing one run can leave its neighbours adjacent
+    and equal, which merges them into a single longer run.
+    """
+    if min_dwell <= 1:
+        return list(path)
+
+    out = list(path)
+    while True:
+        runs, start = [], 0
+        for i in range(1, len(out) + 1):
+            if i == len(out) or out[i] != out[start]:
+                runs.append((start, i, out[start]))
+                start = i
+        short = [r for r in runs
+                 if r[2] is not None and (r[1] - r[0]) < min_dwell]
+        if not short:
+            return out
+
+        a, b, _ = min(short, key=lambda r: r[1] - r[0])
+        k = next(i for i, r in enumerate(runs) if r[0] == a)
+        prev_run = runs[k - 1] if k > 0 else None
+        next_run = runs[k + 1] if k + 1 < len(runs) else None
+
+        # Prefer whichever neighbour is longer; a flicker between two settled
+        # carriers should fall back to the one that was actually established.
+        cand = [r for r in (prev_run, next_run) if r and r[2] is not None]
+        if not cand:
+            for i in range(a, b):
+                out[i] = None
+        else:
+            fill = max(cand, key=lambda r: r[1] - r[0])[2]
+            for i in range(a, b):
+                out[i] = fill
+
+
 def decision_margin(scores):
     """Median gap between the best and second-best candidate.
 

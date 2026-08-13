@@ -26,8 +26,11 @@ NEAR_R = 150.0     # px at 720p, radius counted as "in the pile"
 LOOKBACK = 12      # frames at 60fps (~0.2s) for displacement and acceleration
 REF_FPS = 60.0     # LOOKBACK is a duration, so it is rescaled for 30fps clips
 
+WINDOW = 30        # frames at 60fps (~0.5s) for the time-averaged features
+
 TRAJ = ["conv", "speed", "sep", "accel", "disp", "n_near", "d_nearest",
-        "closing", "speed_rank", "conv_rank"]
+        "closing", "speed_rank", "conv_rank",
+        "speed_avg", "conv_avg", "sep_avg", "near_avg"]
 POS = ["x_norm", "y_norm", "d_centre", "box_h", "box_area", "y_rank",
        "h_rank"]
 
@@ -44,8 +47,51 @@ def _rank(vals):
     return order / max(len(a) - 1, 1)
 
 
+def _history(tid, t, window, pos, vel, present, near_r):
+    """Time-averages of the motion cues over the preceding ~half second.
+
+    A single frame cannot distinguish a carrier from a lead blocker: both are
+    fast, both are ahead of the pack, and on any given frame they look alike.
+    What separates them is that the defence has been converging on one of them
+    for the last half second and not on the other. Averaging over a window is
+    the cheapest way to give a per-frame classifier access to that, short of a
+    sequence model.
+    """
+    ts = [u for u in range(max(t - window, 0), t + 1)
+          if u in pos[tid] and u in vel.get(tid, {})]
+    if not ts:
+        return 0.0, 0.0, 0.0, 0.0
+
+    sp = np.mean([np.linalg.norm(vel[tid][u]) for u in ts])
+
+    # Convergence and separation are only meaningful against the other players
+    # visible at the time, so they are recomputed per sampled frame rather than
+    # smoothed after the fact. Sampled, not exhaustive: it is an average.
+    step = max(len(ts) // 4, 1)
+    sub = ts[::step]
+    cv, sepv, nearv = [], [], []
+    for u in sub:
+        others = [j for j in present
+                  if u in pos.get(j, {}) and u in vel.get(j, {})]
+        if len(others) < 2:
+            continue
+        cv.append(convergence_at(tid, u, pos, vel, others))
+        pts = np.array([pos[j][u] for j in others])
+        sepv.append(float(np.linalg.norm(pos[tid][u] - pts.mean(axis=0))))
+        d = np.linalg.norm(pts - pos[tid][u], axis=1)
+        nearv.append(float((d[d > 1e-6] < near_r).sum()))
+    return (float(sp),
+            float(np.mean(cv)) if cv else 0.0,
+            float(np.mean(sepv)) if sepv else 0.0,
+            float(np.mean(nearv)) if nearv else 0.0)
+
+
+def convergence_at(tid, t, pos, vel, present):
+    return carrier.convergence(tid, t, pos, vel, present)
+
+
 def frame_features(t, present, pos, vel, per_frame, w=1280.0, h=720.0,
-                   lookback=LOOKBACK):
+                   lookback=LOOKBACK, window=WINDOW):
     """Feature rows for every candidate visible on frame `t`.
 
     Returns (track_ids, traj_matrix, pos_matrix).
@@ -57,6 +103,7 @@ def frame_features(t, present, pos, vel, per_frame, w=1280.0, h=720.0,
     centroid = pts.mean(axis=0)
 
     conv, speed, sep, accel, disp, n_near, d_near, closing = ([] for _ in range(8))
+    sp_avg, cv_avg, sep_avg, near_avg = ([] for _ in range(4))
     x_norm, y_norm, d_centre, box_h, box_area = ([] for _ in range(5))
 
     for tid in present:
@@ -92,6 +139,9 @@ def frame_features(t, present, pos, vel, per_frame, w=1280.0, h=720.0,
             rate = max(rate, float(np.dot(v[tj], delta / dist)))
         closing.append(rate)
 
+        a, b, c_, d_ = _history(tid, t, window, pos, vel, present, near_r)
+        sp_avg.append(a); cv_avg.append(b); sep_avg.append(c_); near_avg.append(d_)
+
         x1, y1, x2, y2 = per_frame[t][tid]
         x_norm.append(float(((x1 + x2) / 2) / w))
         y_norm.append(float(y2 / h))
@@ -103,6 +153,7 @@ def frame_features(t, present, pos, vel, per_frame, w=1280.0, h=720.0,
         _z(conv), _z(speed), _z(sep), _z(accel), _z(disp),
         _z(n_near), _z(d_near), _z(closing),
         _rank(speed), _rank(conv),
+        _z(sp_avg), _z(cv_avg), _z(sep_avg), _z(near_avg),
     ])
     posm = np.column_stack([
         np.asarray(x_norm), np.asarray(y_norm), np.asarray(d_centre),
@@ -120,6 +171,7 @@ def build_dataset(pos, vel, per_frame, labels, mask, n, shot_id,
     evaluation and the training objective both need that structure.
     """
     lookback = max(int(round(LOOKBACK * fps / REF_FPS)), 2)
+    window = max(int(round(WINDOW * fps / REF_FPS)), 4)
     X_t, X_p, y, group, tids = [], [], [], [], []
     for t in range(n):
         if not mask[t] or labels[t] is None:
@@ -130,7 +182,8 @@ def build_dataset(pos, vel, per_frame, labels, mask, n, shot_id,
         if len(present) < 3 or labels[t] not in present:
             continue
         ids, traj, posm = frame_features(t, present, pos, vel, per_frame,
-                                         w=w, h=h, lookback=lookback)
+                                         w=w, h=h, lookback=lookback,
+                                         window=window)
         X_t.append(traj)
         X_p.append(posm)
         y.append(np.array([1 if i == labels[t] else 0 for i in ids]))

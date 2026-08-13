@@ -5,15 +5,27 @@ reticle can be found reliably, it yields a ground-truth carrier label on every
 frame, automatically, for as much footage as we care to record -- removing the
 manual annotation cost that normally dominates this problem.
 
-STATUS: unvalidated. A first attempt using colour alone failed by locking onto
-the TURBO meter, a fixed heads-up-display element of a similar blue. The fix
-here is `static_occupancy`: HUD elements sit at the same pixels frame after
-frame, whereas the reticle moves with the player. We suppress pixels that are
-almost always lit, then filter what remains by shape.
+STATUS: validated by inspection, on both game generations. Thirty-six
+uniformly random labelled frames were drawn at native resolution and looked at
+one by one (`scripts/audit_sample.py`). On every live-play frame where the
+ball was visible, the reticle sat on the player holding it. The label is
+therefore trustworthy *while a play is running*, and only then -- before the
+snap it marks a selected player who does not have the ball, and after the
+whistle it marks whoever was tackled. `evaluate.play_mask` excludes both.
 
-`validate` exists because of that failure. It refuses to report success when
-the detected point does not move -- the precise way the first attempt fooled
-itself.
+Getting there took four fixes, and every one of them was found by looking at
+frames rather than at a metric, because each failure produced confident output:
+
+  - colour alone locked onto the TURBO meter;
+  - colour plus "and it moves" locked onto the animating scoreboard;
+  - anchoring to a player's feet still admitted the blue line of scrimmage,
+    which the game paints across the turf and which crosses every player's
+    feet by construction -- hence MAX_WIDTH_RATIO;
+  - `static_occupancy` suppression had never once fired, because its threshold
+    was 0.60 and nothing in the frame exceeds 0.592.
+
+`validate` remains as a guard against the second of those. It is necessary and
+nowhere near sufficient: it only asks whether the detection moves.
 """
 
 from __future__ import annotations

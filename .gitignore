@@ -17,6 +17,12 @@ data/external/
 *.png
 *.jpg
 
+# ...except the committed demo and figures, which are the deliverable. Kept
+# small on purpose (H.264, ~11 MB total); regenerate with scripts/make_demos.py
+# and scripts/results_card.py rather than adding new ones by hand.
+!docs/**/*.mp4
+!docs/**/*.png
+
 # Python
 __pycache__/
 *.py[cod]

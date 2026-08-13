@@ -31,7 +31,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src import hud, segment  # noqa: E402
+from src import hud, segment, tracking  # noqa: E402
 
 TURF_LO = (35, 60, 40)
 TURF_HI = (100, 255, 255)
@@ -91,7 +91,8 @@ def track_shot(model, cap, a, b, static, weights):
         if not ok:
             break
         res = model.track(
-            frame, persist=True, classes=[0], conf=0.35, imgsz=960,
+            frame, persist=True, classes=[tracking.PERSON_CLASS],
+            conf=tracking.CONF, imgsz=tracking.IMGSZ,
             tracker="bytetrack.yaml", verbose=False,
         )[0]
 

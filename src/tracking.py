@@ -13,8 +13,14 @@ import numpy as np
 from ultralytics import YOLO
 
 PERSON_CLASS = 0          # COCO
-CONF = 0.35
-IMGSZ = 960
+
+# Raised from 960 and lowered from 0.35. At the old settings a player being
+# tackled -- arms and legs tangled with another player, the exact moment
+# possession is most in doubt -- frequently went undetected, so the frame lost
+# its carrier label entirely. Chosen by looking at whether the ball carrier in
+# a pile is detected at all, never by looking at downstream accuracy.
+CONF = 0.20
+IMGSZ = 1280
 SMOOTH_WIN = 5            # frames at 60fps, centred velocity estimate
 MIN_TRACK_LEN = 8         # drop blink-in detections
 REF_FPS = 60.0            # both above are durations; 30fps clips halve them
