@@ -15,8 +15,9 @@ from ultralytics import YOLO
 PERSON_CLASS = 0          # COCO
 CONF = 0.35
 IMGSZ = 960
-SMOOTH_WIN = 5            # frames, centred velocity estimate
+SMOOTH_WIN = 5            # frames at 60fps, centred velocity estimate
 MIN_TRACK_LEN = 8         # drop blink-in detections
+REF_FPS = 60.0            # both above are durations; 30fps clips halve them
 
 
 def collect_tracks(video, start_s, duration_s, weights):
@@ -54,7 +55,7 @@ def collect_tracks(video, start_s, duration_s, weights):
     return frames, per_frame, fps
 
 
-def build_trajectories(per_frame):
+def build_trajectories(per_frame, fps=REF_FPS):
     """Per-track position and smoothed velocity over time.
 
     Position is the bottom-centre of the box -- the player's ground contact
@@ -66,14 +67,16 @@ def build_trajectories(per_frame):
         for tid, (x1, y1, x2, y2) in boxes.items():
             pos[tid][t] = np.array([(x1 + x2) / 2.0, y2], dtype=np.float64)
 
-    pos = {tid: d for tid, d in pos.items() if len(d) >= MIN_TRACK_LEN}
+    smooth = max(int(round(SMOOTH_WIN * fps / REF_FPS)), 1)
+    min_len = max(int(round(MIN_TRACK_LEN * fps / REF_FPS)), 3)
+    pos = {tid: d for tid, d in pos.items() if len(d) >= min_len}
 
     vel = defaultdict(dict)
     for tid, d in pos.items():
         ts = sorted(d)
         for i, t in enumerate(ts):
-            lo = ts[max(0, i - SMOOTH_WIN)]
-            hi = ts[min(len(ts) - 1, i + SMOOTH_WIN)]
+            lo = ts[max(0, i - smooth)]
+            hi = ts[min(len(ts) - 1, i + smooth)]
             span = hi - lo
             vel[tid][t] = (d[hi] - d[lo]) / span if span > 0 else np.zeros(2)
     return pos, dict(vel)

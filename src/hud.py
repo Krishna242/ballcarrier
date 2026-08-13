@@ -25,10 +25,32 @@ import numpy as np
 BLUE_LO = (100, 150, 120)
 BLUE_HI = (125, 255, 255)
 
-STATIC_FRAC = 0.60     # lit in >60% of frames -> treat as HUD furniture
-MIN_AREA = 150
+# Lit in >20% of frames -> interface furniture, not a reticle.
+#
+# This was 0.60, which suppressed nothing: the highest occupancy anywhere in
+# 9,764 frames is 0.592, so the mask was empty and the filter was inert from
+# the day it was written. Measured, the separation is wide and the threshold
+# is not delicate -- genuine reticle detections sit at occupancy 0.03 at the
+# 90th percentile, because a reticle that follows a running player is never
+# over the same pixel for long, while the TURBO bar reaches 0.59 and every
+# pixel above 0.20 in the whole frame belongs to it.
+STATIC_FRAC = 0.20
+
+# Size and offset thresholds below are quoted at 720p and scaled by frame
+# height at use. The 1997 arcade capture is 1356x1016, where a reticle is half
+# again as wide and twice the area, and fixed pixel counts silently reject
+# every one of them. Ratios and aspects are already scale-free and are not
+# scaled.
+REF_H = 720.0
+MIN_AREA = 150         # at 720p; scales with the square of the height
 MAX_AREA = 6000
 MIN_ASPECT = 1.6       # the reticle is a wide, flat ellipse
+MAX_ASPECT = 4.5       # ...but an ellipse, not a bar. See below.
+MAX_WIDTH_RATIO = 2.5  # ...drawn around one player, so scaled to that player
+
+
+def scale_of(frame):
+    return frame.shape[0] / REF_H
 
 
 def colour_mask(frame):
@@ -49,26 +71,31 @@ def static_occupancy(frames):
     return acc / max(len(frames), 1)
 
 
-FOOT_DY_ABOVE = 35     # px the reticle may sit above a player's box bottom
+FOOT_DY_ABOVE = 35     # px at 720p the reticle may sit above the box bottom
 FOOT_DY_BELOW = 45     # ...and below it
 FOOT_DX_PAD = 25       # horizontal slack around the box
 
 
-def _at_a_players_feet(cx, cy, boxes):
-    """Is this candidate positioned where a reticle is drawn -- at the feet of
-    a detected player?
+def _at_a_players_feet(cx, cy, boxes, s=1.0):
+    """The box this candidate sits at the feet of, or None.
 
     This is the constraint no HUD element can satisfy, and it is what the
     earlier colour-and-motion filters lacked. Requiring only 'saturated blue'
     matched the TURBO meter; adding 'and it moves' then matched the animating
     scoreboard. Anchoring to a player box rules out both, because interface
     furniture is not drawn under a tracked person.
+
+    It does not rule out everything, which is why the caller applies shape
+    tests to what this returns. Two blue things in this game *do* pass the
+    anchor test: the line of scrimmage the game paints across the turf, which
+    crosses every player's feet by construction, and the TURBO bar whenever a
+    player happens to run in front of it.
     """
     for (x1, _, x2, y2) in boxes.values():
-        if x1 - FOOT_DX_PAD <= cx <= x2 + FOOT_DX_PAD and \
-           y2 - FOOT_DY_ABOVE <= cy <= y2 + FOOT_DY_BELOW:
-            return True
-    return False
+        if x1 - FOOT_DX_PAD * s <= cx <= x2 + FOOT_DX_PAD * s and \
+           y2 - FOOT_DY_ABOVE * s <= cy <= y2 + FOOT_DY_BELOW * s:
+            return (x1, x2)
+    return None
 
 
 def find_reticle(frame, static_mask, boxes=None):
@@ -82,18 +109,29 @@ def find_reticle(frame, static_mask, boxes=None):
     m = colour_mask(frame)
     m[static_mask > STATIC_FRAC] = 0
 
+    s = scale_of(frame)
+    lo_area, hi_area = MIN_AREA * s * s, MAX_AREA * s * s
+
     cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
     for c in cnts:
         area = cv2.contourArea(c)
-        if not (MIN_AREA <= area <= MAX_AREA):
+        if not (lo_area <= area <= hi_area):
             continue
         x, y, w, h = cv2.boundingRect(c)
-        if w / max(h, 1) < MIN_ASPECT:
+        aspect = w / max(h, 1)
+        if not (MIN_ASPECT <= aspect <= MAX_ASPECT):
             continue
         cx, cy = x + w / 2.0, y + h / 2.0
-        if boxes is not None and not _at_a_players_feet(cx, cy, boxes):
-            continue
+        if boxes is not None:
+            anchor = _at_a_players_feet(cx, cy, boxes, s)
+            if anchor is None:
+                continue
+            # The reticle is drawn around one player, so it is about as wide as
+            # that player. The line of scrimmage is as wide as the field, and
+            # passes the anchor test at every player it crosses.
+            if w > MAX_WIDTH_RATIO * max(anchor[1] - anchor[0], 1):
+                continue
         if best is None or area > best[0]:
             best = (area, cx, cy, w, h)
     return None if best is None else best[1:]
@@ -109,12 +147,13 @@ def harvest(frames, per_frame_boxes=None):
     return out, static
 
 
-def assign_to_track(reticle, per_frame_boxes):
+def assign_to_track(reticle, per_frame_boxes, scale=1.0):
     """Map each reticle hit to the player track it sits beneath.
 
     The reticle is drawn at the player's feet, so we score boxes by horizontal
     containment and vertical proximity of the box bottom.
     """
+    pad, max_d = 20 * scale, 60 * scale
     labels = []
     for t, r in enumerate(reticle):
         if r is None:
@@ -123,12 +162,12 @@ def assign_to_track(reticle, per_frame_boxes):
         cx, cy, _, _ = r
         best, best_d = None, 1e9
         for tid, (x1, _, x2, y2) in per_frame_boxes[t].items():
-            if not (x1 - 20 <= cx <= x2 + 20):
+            if not (x1 - pad <= cx <= x2 + pad):
                 continue
             d = abs(y2 - cy)
             if d < best_d:
                 best, best_d = tid, d
-        labels.append(best if best_d < 60 else None)
+        labels.append(best if best_d < max_d else None)
     return labels
 
 
