@@ -46,6 +46,8 @@ def load(cache, source=None):
             "source": source or cache.name,
             "meta": meta, "d": d, "pos": pos, "vel": vel, "mask": mask,
             "n": n, "fps": fps, "w": w, "h": h, "sc": sc,
+            "video": idx.get("video"),
+            "cache": str(cache),
         })
     return shots
 
@@ -101,3 +103,21 @@ def candidates(shot, t):
     boxes = shot["d"]["per_frame"][t]
     return [tid for tid in pos
             if t in pos[tid] and t in vel.get(tid, {}) and tid in boxes]
+
+
+def resolve_video(shot, cache=None):
+    p = Path(shot.get("video") or "")
+    if p.is_file():
+        return p
+    root = Path(__file__).resolve().parents[1]
+    for cand in (root / p, Path(cache) / p.name if cache and p.name else None):
+        if cand is not None and cand.is_file():
+            return cand
+    return p
+
+
+def ensure_ball(shot, cache):
+    """Detect the ball for this shot and store it on the shot and in the cache."""
+    from . import ball
+    video = resolve_video(shot, cache)
+    return ball.load_or_detect(shot, cache, video)

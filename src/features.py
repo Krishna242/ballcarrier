@@ -126,8 +126,6 @@ def frame_features(t, present, pos, vel, per_frame, w=1280.0, h=720.0,
         n_near.append(float((d < near_r).sum()))
         d_near.append(float(d.min()) if len(d) else 0.0)
 
-        # How fast the nearest others are closing, irrespective of how many
-        # there are -- a carrier in the open field has one pursuer, not eight.
         rate = 0.0
         for tj in present:
             if tj == tid:
@@ -181,9 +179,10 @@ def build_dataset(pos, vel, per_frame, labels, mask, n, shot_id,
                    and tid in per_frame[t]]
         if len(present) < 3 or labels[t] not in present:
             continue
-        ids, traj, posm = frame_features(t, present, pos, vel, per_frame,
-                                         w=w, h=h, lookback=lookback,
-                                         window=window)
+        ids, traj, posm = frame_features(
+            t, present, pos, vel, per_frame,
+            w=w, h=h, lookback=lookback, window=window,
+        )
         X_t.append(traj)
         X_p.append(posm)
         y.append(np.array([1 if i == labels[t] else 0 for i in ids]))

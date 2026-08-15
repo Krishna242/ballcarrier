@@ -24,7 +24,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src import carrier, dataset, evaluate as ev, segment  # noqa: E402
+from src import ball, carrier, dataset, evaluate as ev, segment  # noqa: E402
 
 
 def predict_heuristic(sh):
@@ -66,11 +66,18 @@ def predict_centre(sh):
         sh, lambda s, tid, t: -abs(s["pos"][tid][t][0] - s["w"] / 2.0))
 
 
+def predict_pan_lowest(sh):
+    """Lowest-on-screen, but only on camera-pan frames; else heuristic."""
+    base = predict_heuristic(sh)
+    return ball.blend_with_lowest(base, sh)
+
+
 PREDICTORS = {
     "heuristic (conv+speed+sep, viterbi)": predict_heuristic,
     "fastest player": predict_fastest,
     "lowest on screen": predict_lowest,
     "nearest frame centre": predict_centre,
+    "heuristic + lowest if pulled back": predict_pan_lowest,
 }
 
 
@@ -92,7 +99,7 @@ def main():
         d, sc = sh["d"], sh["sc"]
         mask = dataset.scored_mask(sh)
         n_lab = int(mask.sum())
-        if n_lab < 30:
+        if n_lab < 10:
             per_shot.append({"key": sh["key"], "labelled_live": n_lab,
                              "skipped": "too few labelled live frames"})
             continue
