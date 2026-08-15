@@ -57,19 +57,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: E402
 from sklearn.linear_model import LogisticRegression  # noqa: E402
 
-from src import carrier, dataset, evaluate as ev, features  # noqa: E402
+from src import ball, carrier, dataset, evaluate as ev, features  # noqa: E402
 
 MIN_ROWS = 120
+# Arcade clips are short; dropping them at 120 rows silently empties a fold.
+MIN_ROWS_ARCADE = 30
 SETS = {"traj": 0, "pos": 1, "both": None}
 
 
-def attach_dataset(shots):
+def attach_dataset(shots, min_rows=MIN_ROWS):
     for s in shots:
         s["ds"] = features.build_dataset(
             s["pos"], s["vel"], s["d"]["per_frame"], s["d"]["labels"],
             s["mask"], s["n"], s["meta"]["shot"],
             w=s["w"], h=s["h"], fps=s["fps"])
-    return [s for s in shots if len(s["ds"][2]) >= MIN_ROWS]
+    return [s for s in shots if len(s["ds"][2]) >= min_rows]
 
 
 def make_model(kind):
@@ -172,7 +174,10 @@ def score_fold(train, test_shot, model_kind):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cache", default="data/interim/cache")
+    ap.add_argument("--cache", nargs="+", default=["data/interim/cache"],
+                    help="one or more harvested cache dirs. Multiple dirs "
+                         "without --test is leave-one-shot-out across them "
+                         "(arcade-only leave-one-clip-out).")
     ap.add_argument("--test", nargs="*", default=None,
                     help="cache dirs to test on; omit for leave-one-shot-out")
     ap.add_argument("--include-test-in-train", action="store_true",
@@ -194,11 +199,13 @@ def main():
     DROP_TEMPORAL = not args.temporal
     penalties = [float(x) for x in args.penalties.split(",")]
     dwells = [float(x) for x in str(args.dwell).split(",")]
-    base = attach_dataset(dataset.load(args.cache, source="train"))
+    cache_specs = {Path(p).name: p for p in args.cache}
+    min_rows = MIN_ROWS_ARCADE if len(args.cache) > 1 else MIN_ROWS
+    base = attach_dataset(dataset.load_many(cache_specs), min_rows=min_rows)
 
     if args.test:
         test_pool = attach_dataset(dataset.load_many(
-            {Path(p).name: p for p in args.test}))
+            {Path(p).name: p for p in args.test}), min_rows=1)
         if args.include_test_in_train:
             folds = [(base + [o for o in test_pool if o is not s], s)
                      for s in test_pool]
@@ -210,7 +217,7 @@ def main():
                       f"{len(test_pool)} held-out clips, no in-domain data")
     else:
         folds = [([o for o in base if o is not s], s) for s in base]
-        regime = f"leave-one-shot-out within {args.cache}"
+        regime = f"leave-one-shot-out within {list(cache_specs)}"
 
     print(f"{regime}\n{len(folds)} folds, dwell={args.dwell}s\n")
 
@@ -291,6 +298,57 @@ def main():
                 "per_shot": per_shot,
             }
         print()
+
+    # Pulled-back camera hybrid: on shots where detection keeps going empty
+    # the isometric camera has zoomed out and lowest-on-screen is the carrier.
+    print(f"{'hybrid':6s} {'pen':>5s} {'dwell':>6s} {'frames':>7s} {'acc':>6s} "
+          f"{'95% CI':>15s} {'lift':>6s} {'chgP':>6s} {'chgR':>6s}")
+    summary["sets"]["hybrid"] = {}
+    for pen, dwell in [(p_, d_) for p_ in penalties for d_ in dwells]:
+        per_shot, tp, fp, fn = [], 0, 0, 0
+        for e in cached:
+            pick = (argmax_by_frame(e["scores"]["both"], e["grp"], e["tid"])
+                    if pen == 0.0 else
+                    viterbi_by_frame(e["scores"]["both"], e["grp"],
+                                     e["tid"], pen))
+            pred = [None] * e["held"]["n"]
+            for t, p in pick.items():
+                pred[t] = p
+            pred = ball.blend_with_lowest(pred, e["held"])
+            sc = e["held"]["sc"]
+            if dwell > 0:
+                pred = carrier.enforce_dwell(
+                    pred, int(round(dwell * e["held"]["fps"])))
+            scored_frames = list(pick)
+            hits = sum(1 for t in scored_frames
+                       if pred[t] == e["truth"].get(t))
+            pe = ev.pred_changes(pred, e["held"]["d"]["per_frame"],
+                                 e["held"]["mask"], scale=sc["space"])
+            mm = ev.match_events(e["true_ev"], pe,
+                                 frames_scale=sc["frames"])
+            tp += mm["tp"]; fp += mm["fp"]; fn += mm["fn"]
+            per_shot.append({"key": e["key"], "hits": hits,
+                             "frames": len(scored_frames),
+                             "accuracy": round(
+                                 hits / max(len(scored_frames), 1), 3)})
+        n = sum(r["frames"] for r in per_shot)
+        acc = sum(r["hits"] for r in per_shot) / max(n, 1)
+        lo, hi = bootstrap_ci(per_shot)
+        prec = tp / max(tp + fp, 1e-9)
+        rec = tp / max(tp + fn, 1e-9)
+        print(f"{'hybrid':6s} {pen:5.2f} {dwell:6.2f} {n:7d} {acc:6.3f} "
+              f"[{lo:.3f},{hi:.3f}] {acc/chance:5.2f}x "
+              f"{prec:6.3f} {rec:6.3f}")
+        summary["sets"]["hybrid"][f"penalty_{pen}_dwell_{dwell}"] = {
+            "frames": n, "accuracy": round(acc, 4),
+            "ci95": [round(lo, 4), round(hi, 4)],
+            "lift": round(acc / chance, 2),
+            "changes": {"tp": tp, "fp": fp, "fn": fn,
+                        "precision": round(prec, 3),
+                        "recall": round(rec, 3)},
+            "per_shot": per_shot,
+        }
+    print()
 
     Path(args.out).write_text(json.dumps(summary, indent=2))
     print(f"wrote {args.out}")

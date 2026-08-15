@@ -21,9 +21,29 @@ PERSON_CLASS = 0          # COCO
 # a pile is detected at all, never by looking at downstream accuracy.
 CONF = 0.20
 IMGSZ = 1280
+IMGSZ_CPU = 640           # 1280 plus YOLO11m hits the NMS time limit on CPU
 SMOOTH_WIN = 5            # frames at 60fps, centred velocity estimate
 MIN_TRACK_LEN = 8         # drop blink-in detections
 REF_FPS = 60.0            # both above are durations; 30fps clips halve them
+
+
+def track_kwargs():
+    """Ultralytics .track() args, scaled down on CPU so harvest can finish."""
+    try:
+        import torch
+        cuda = torch.cuda.is_available()
+    except Exception:
+        cuda = False
+    return {
+        "persist": True,
+        "classes": [PERSON_CLASS],
+        "conf": CONF,
+        "imgsz": IMGSZ if cuda else IMGSZ_CPU,
+        "tracker": "bytetrack.yaml",
+        "verbose": False,
+        "device": "0" if cuda else "cpu",
+        "max_det": 50,
+    }
 
 
 def collect_tracks(video, start_s, duration_s, weights):
@@ -43,10 +63,7 @@ def collect_tracks(video, start_s, duration_s, weights):
         ok, frame = cap.read()
         if not ok:
             break
-        res = model.track(
-            frame, persist=True, classes=[PERSON_CLASS], conf=CONF,
-            imgsz=IMGSZ, tracker="bytetrack.yaml", verbose=False,
-        )[0]
+        res = model.track(frame, **track_kwargs())[0]
 
         boxes = {}
         if res.boxes is not None and res.boxes.id is not None:

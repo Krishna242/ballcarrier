@@ -83,18 +83,17 @@ def track_shot(model, cap, a, b, static, weights):
     from ultralytics import YOLO
 
     model = YOLO(weights)          # fresh instance == fresh tracker state
+    kw = tracking.track_kwargs()
     cap.set(cv2.CAP_PROP_POS_FRAMES, a)
+    n = b - a
+    t0 = time.time()
 
     per_frame, reticle = [], []
-    for _ in range(b - a):
+    for i in range(n):
         ok, frame = cap.read()
         if not ok:
             break
-        res = model.track(
-            frame, persist=True, classes=[tracking.PERSON_CLASS],
-            conf=tracking.CONF, imgsz=tracking.IMGSZ,
-            tracker="bytetrack.yaml", verbose=False,
-        )[0]
+        res = model.track(frame, **kw)[0]
 
         boxes = {}
         if res.boxes is not None and res.boxes.id is not None:
@@ -105,6 +104,11 @@ def track_shot(model, cap, a, b, static, weights):
 
         per_frame.append(boxes)
         reticle.append(hud.find_reticle(frame, static, boxes))
+        if (i + 1) % 25 == 0 or i + 1 == n:
+            elapsed = time.time() - t0
+            fps_h = (i + 1) / max(elapsed, 1e-6)
+            print(f"        {i + 1}/{n} frames  {fps_h:.2f} fps  "
+                  f"boxes {len(boxes)}", flush=True)
 
     return per_frame, reticle
 
@@ -131,6 +135,9 @@ def main():
     print(f"      {len(cuts)} cuts -> {len(shots)} usable shots")
 
     print("[3/3] tracking + reticle, per shot")
+    kw = tracking.track_kwargs()
+    print(f"      device={kw['device']} imgsz={kw['imgsz']} weights={args.weights}",
+          flush=True)
     cap = cv2.VideoCapture(str(args.video))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
