@@ -21,6 +21,15 @@ import numpy as np
 
 from . import evaluate as ev, tracking
 
+# Ablation switch for the camera-motion correction, so "does it help?" is a
+# measurement rather than a belief. Set by scripts via set_camera().
+NO_CAMERA = False
+
+
+def set_camera(enabled):
+    global NO_CAMERA
+    NO_CAMERA = not enabled
+
 
 def load(cache, source=None):
     """Read one harvested cache into a list of shot dicts."""
@@ -33,19 +42,44 @@ def load(cache, source=None):
     w = idx.get("width", 1280)
     sc = ev.scales(h, fps)
 
+    # Camera motion is optional and additive: a cache harvested before
+    # scripts/estimate_camera.py existed loads and behaves exactly as before.
+    balls = {}
+    ball_pkl = cache / "ball_evidence.pkl"
+    if ball_pkl.exists():
+        with open(ball_pkl, "rb") as fh:
+            balls = pickle.load(fh)
+
+    cams = {}
+    cam_pkl = cache / "camera.pkl"
+    if cam_pkl.exists():
+        with open(cam_pkl, "rb") as fh:
+            cams = pickle.load(fh)
+
     shots = []
     for meta in idx["shots"]:
         with open(cache / f"shot{meta['shot']:02d}.pkl", "rb") as fh:
             d = pickle.load(fh)
         n = len(d["per_frame"])
-        pos, vel = tracking.build_trajectories(d["per_frame"], fps=fps)
-        mask = ev.live_mask(green, vel, n, d["frame_a"],
+        cam = cams.get(meta["shot"]) if not NO_CAMERA else None
+        pos, vel = tracking.build_trajectories(d["per_frame"], fps=fps, cam=cam)
+
+        # The live-play gate is thresholded on mean player speed, so deriving
+        # it from the *corrected* velocities would make the set of scored
+        # frames depend on whether the correction is switched on -- and the
+        # camera ablation would then be comparing two different test sets. It
+        # was: 3,787 frames against 3,660. The gate therefore always uses raw
+        # screen-space velocity, so the evaluation domain is fixed and only
+        # the features under test change.
+        _, vel_raw = tracking.build_trajectories(d["per_frame"], fps=fps)
+        mask = ev.live_mask(green, vel_raw, n, d["frame_a"],
                             scale=sc["speed"], frames_scale=sc["frames"])
         shots.append({
             "key": f"{source or cache.name}:{meta['shot']:02d}",
             "source": source or cache.name,
             "meta": meta, "d": d, "pos": pos, "vel": vel, "mask": mask,
-            "n": n, "fps": fps, "w": w, "h": h, "sc": sc,
+            "n": n, "fps": fps, "w": w, "h": h, "sc": sc, "cam": cam,
+            "ball_ev": balls.get(meta["shot"], {}),
             "video": idx.get("video"),
             "cache": str(cache),
         })

@@ -78,12 +78,37 @@ def collect_tracks(video, start_s, duration_s, weights):
     return frames, per_frame, fps
 
 
-def build_trajectories(per_frame, fps=REF_FPS):
+def _camera_shift(cam, lo, hi):
+    """Compose the frame-to-frame transforms over (lo, hi] into one affine.
+
+    `cam[t]` carries frame t-1 into frame t, so the displacement the camera
+    contributed between `lo` and `hi` is the composition of everything in
+    between. Missing entries compose as identity, which is the right default:
+    an unestimated frame contributes no correction rather than a guessed one.
+    """
+    A = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    for t in range(lo + 1, hi + 1):
+        B = cam[t] if 0 <= t < len(cam) else None
+        if B is None:
+            continue
+        M = np.vstack([A, [0, 0, 1]])
+        A = (np.vstack([B, [0, 0, 1]]) @ M)[:2]
+    return A
+
+
+def build_trajectories(per_frame, fps=REF_FPS, cam=None):
     """Per-track position and smoothed velocity over time.
 
     Position is the bottom-centre of the box -- the player's ground contact
     point -- which is far more stable than the box centre when players are
     occluded from the waist up in a pile.
+
+    When `cam` is supplied, velocity is measured against where the *camera*
+    would have carried the player had they stood still, so a pan no longer
+    reads as every player accelerating at once. Positions are left in screen
+    coordinates deliberately: a rigid camera move shifts all players equally,
+    so relative positions -- separation, crowding, who is near whom -- are
+    already invariant to it, and rewriting them would only add drift.
     """
     pos = defaultdict(dict)
     for t, boxes in enumerate(per_frame):
@@ -101,5 +126,12 @@ def build_trajectories(per_frame, fps=REF_FPS):
             lo = ts[max(0, i - smooth)]
             hi = ts[min(len(ts) - 1, i + smooth)]
             span = hi - lo
-            vel[tid][t] = (d[hi] - d[lo]) / span if span > 0 else np.zeros(2)
+            if span <= 0:
+                vel[tid][t] = np.zeros(2)
+                continue
+            start = d[lo]
+            if cam is not None:
+                A = _camera_shift(cam, lo, hi)
+                start = (start @ A[:, :2].T) + A[:, 2]
+            vel[tid][t] = (d[hi] - start) / span
     return pos, dict(vel)

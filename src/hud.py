@@ -110,20 +110,41 @@ def _at_a_players_feet(cx, cy, boxes, s=1.0):
     return None
 
 
-def find_reticle(frame, static_mask, boxes=None):
-    """Locate the reticle in one frame. Returns (cx, cy, w, h) or None.
+CLOSE_W = 60           # px at 720p; horizontal reach of the gap-bridging close
+CLOSE_H = 7            # ...and vertical, kept small on purpose
 
-    `boxes` maps track id -> xyxy for this frame. It is optional only so the
-    function can be exercised in isolation; in normal use it should always be
-    supplied, because the player-anchoring test below is what makes this
-    detector trustworthy rather than merely confident.
+
+def _bridge_segments(m, s):
+    """Reconnect a reticle drawn as separate arcs rather than a solid ellipse.
+
+    Some captures render the indicator as a checkered ring -- blue arcs
+    alternating with the other team colour -- and the colour mask then yields
+    three or four small crescents where the shape tests expect one ellipse.
+    On an eighteen-minute arcade capture that dropped the hit rate to 0.8%.
+
+    The kernel is wide and short because the thing being rebuilt is a flat
+    ellipse: bridging horizontally joins arcs of the same ring, while staying
+    short vertically avoids welding the ring onto the player standing in it,
+    whose navy uniform also falls inside the reticle blue.
     """
-    m = colour_mask(frame)
-    m[static_mask > STATIC_FRAC] = 0
+    k = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (max(int(CLOSE_W * s) | 1, 3), max(int(CLOSE_H * s) | 1, 3)))
+    return cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
 
-    s = scale_of(frame)
+
+def _best_candidate(m, s, boxes, prefer_flat=False):
+    """Best reticle candidate in a mask, or None.
+
+    `prefer_flat` ranks by aspect instead of area. It is used only on the
+    segmented-ring fallback, where the competing blue object is the numbered
+    badge that floats beside the controlled player. Both mark the same player,
+    but the badge sits at chest height while the reticle sits at the feet, and
+    the track assignment downstream matches on the box *bottom* -- so picking
+    the badge quietly costs labels. They separate cleanly on shape: the badge
+    measures about 1.6 wide-to-tall, the ring about 4.2.
+    """
     lo_area, hi_area = MIN_AREA * s * s, MAX_AREA * s * s
-
     cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
     for c in cnts:
@@ -144,9 +165,32 @@ def find_reticle(frame, static_mask, boxes=None):
             # passes the anchor test at every player it crosses.
             if w > MAX_WIDTH_RATIO * max(anchor[1] - anchor[0], 1):
                 continue
-        if best is None or area > best[0]:
-            best = (area, cx, cy, w, h)
+        rank = aspect if prefer_flat else area
+        if best is None or rank > best[0]:
+            best = (rank, cx, cy, w, h)
     return None if best is None else best[1:]
+
+
+def find_reticle(frame, static_mask, boxes=None):
+    """Locate the reticle in one frame. Returns (cx, cy, w, h) or None.
+
+    `boxes` maps track id -> xyxy for this frame. It is optional only so the
+    function can be exercised in isolation; in normal use it should always be
+    supplied, because the player-anchoring test is what makes this detector
+    trustworthy rather than merely confident.
+
+    The segmented-ring pass runs only when the ordinary one finds nothing, so
+    footage where the indicator is already a solid ellipse is unaffected --
+    the fallback can add detections but can never change an existing one.
+    """
+    m = colour_mask(frame)
+    m[static_mask > STATIC_FRAC] = 0
+    s = scale_of(frame)
+
+    hit = _best_candidate(m, s, boxes)
+    if hit is not None:
+        return hit
+    return _best_candidate(_bridge_segments(m, s), s, boxes, prefer_flat=True)
 
 
 def harvest(frames, per_frame_boxes=None):

@@ -34,6 +34,11 @@ TRAJ = ["conv", "speed", "sep", "accel", "disp", "n_near", "d_nearest",
 POS = ["x_norm", "y_norm", "d_centre", "box_h", "box_area", "y_rank",
        "h_rank"]
 
+# Appearance evidence: does the football appear to be in this player's hands?
+# Kept as its own group so its contribution is attributable, exactly as the
+# trajectory/position split is.
+BALL = ["ball_score", "ball_rank"]
+
 
 def _z(vals):
     a = np.asarray(vals, dtype=np.float64)
@@ -161,7 +166,7 @@ def frame_features(t, present, pos, vel, per_frame, w=1280.0, h=720.0,
 
 
 def build_dataset(pos, vel, per_frame, labels, mask, n, shot_id,
-                  w=1280.0, h=720.0, fps=REF_FPS):
+                  w=1280.0, h=720.0, fps=REF_FPS, ball=None):
     """Flatten a shot into candidate rows, keeping frame grouping intact.
 
     `group` records which frame each row came from, because the prediction is
@@ -170,7 +175,7 @@ def build_dataset(pos, vel, per_frame, labels, mask, n, shot_id,
     """
     lookback = max(int(round(LOOKBACK * fps / REF_FPS)), 2)
     window = max(int(round(WINDOW * fps / REF_FPS)), 4)
-    X_t, X_p, y, group, tids = [], [], [], [], []
+    X_t, X_p, X_b, y, group, tids = [], [], [], [], [], []
     for t in range(n):
         if not mask[t] or labels[t] is None:
             continue
@@ -185,11 +190,15 @@ def build_dataset(pos, vel, per_frame, labels, mask, n, shot_id,
         )
         X_t.append(traj)
         X_p.append(posm)
+        row = (ball or {}).get(t, {})
+        bs = np.array([float(row.get(i, 0.0)) for i in ids])
+        X_b.append(np.column_stack([_z(bs), _rank(bs)]))
         y.append(np.array([1 if i == labels[t] else 0 for i in ids]))
         group.append(np.full(len(ids), t))
         tids.append(np.array(ids))
     if not X_t:
-        empty = np.zeros((0, len(TRAJ))), np.zeros((0, len(POS)))
-        return (*empty, np.zeros(0), np.zeros(0), np.zeros(0))
+        return (np.zeros((0, len(TRAJ))), np.zeros((0, len(POS))),
+                np.zeros(0), np.zeros(0), np.zeros(0),
+                np.zeros((0, len(BALL))))
     return (np.vstack(X_t), np.vstack(X_p), np.concatenate(y),
-            np.concatenate(group), np.concatenate(tids))
+            np.concatenate(group), np.concatenate(tids), np.vstack(X_b))

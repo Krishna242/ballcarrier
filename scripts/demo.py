@@ -151,7 +151,7 @@ def main():
         print(f"{args.cache}: no usable shot")
         return
     sh = shots[0]
-    _, _, y_te, grp, tid = sh["ds"]
+    _, _, y_te, grp, tid = sh["ds"][:5]
     p = model.predict_proba(features_of(sh, which))[:, 1]
     score = np.log(np.clip(p, 1e-6, 1 - 1e-6))
     pick = viterbi_by_frame(score, grp, tid, args.penalty)

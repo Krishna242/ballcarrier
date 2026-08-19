@@ -62,7 +62,7 @@ from src import ball, carrier, dataset, evaluate as ev, features  # noqa: E402
 MIN_ROWS = 120
 # Arcade clips are short; dropping them at 120 rows silently empties a fold.
 MIN_ROWS_ARCADE = 30
-SETS = {"traj": 0, "pos": 1, "both": None}
+SETS = {"traj": 0, "pos": 1, "both": None, "both+ball": "ball"}
 
 
 def attach_dataset(shots, min_rows=MIN_ROWS):
@@ -70,7 +70,7 @@ def attach_dataset(shots, min_rows=MIN_ROWS):
         s["ds"] = features.build_dataset(
             s["pos"], s["vel"], s["d"]["per_frame"], s["d"]["labels"],
             s["mask"], s["n"], s["meta"]["shot"],
-            w=s["w"], h=s["h"], fps=s["fps"])
+            w=s["w"], h=s["h"], fps=s["fps"], ball=s.get("ball_ev"))
     return [s for s in shots if len(s["ds"][2]) >= min_rows]
 
 
@@ -103,20 +103,34 @@ def _trim(Xt):
     return Xt[:, :-N_TEMPORAL] if DROP_TEMPORAL else Xt
 
 
-def stack(shots, which):
-    Xt = _trim(np.vstack([s["ds"][0] for s in shots]))
-    Xp = np.vstack([s["ds"][1] for s in shots])
-    y = np.concatenate([s["ds"][2] for s in shots])
+def _blocks(shot_or_list, is_list):
+    if is_list:
+        Xt = _trim(np.vstack([s["ds"][0] for s in shot_or_list]))
+        Xp = np.vstack([s["ds"][1] for s in shot_or_list])
+        Xb = np.vstack([s["ds"][5] for s in shot_or_list])
+        return Xt, Xp, Xb
+    return (_trim(shot_or_list["ds"][0]), shot_or_list["ds"][1],
+            shot_or_list["ds"][5])
+
+
+def _select(Xt, Xp, Xb, which):
     if which == 0:
-        return Xt, y
+        return Xt
     if which == 1:
-        return Xp, y
-    return np.hstack([Xt, Xp]), y
+        return Xp
+    if which == "ball":
+        return np.hstack([Xt, Xp, Xb])
+    return np.hstack([Xt, Xp])
+
+
+def stack(shots, which):
+    Xt, Xp, Xb = _blocks(shots, True)
+    y = np.concatenate([s["ds"][2] for s in shots])
+    return _select(Xt, Xp, Xb, which), y
 
 
 def features_of(shot, which):
-    Xt, Xp = _trim(shot["ds"][0]), shot["ds"][1]
-    return Xt if which == 0 else Xp if which == 1 else np.hstack([Xt, Xp])
+    return _select(*_blocks(shot, False), which)
 
 
 def argmax_by_frame(score, group, tids):
@@ -183,6 +197,8 @@ def main():
     ap.add_argument("--include-test-in-train", action="store_true",
                     help="also train on the test source, minus the held-out "
                          "clip. Leave-one-clip-out rather than cross-domain.")
+    ap.add_argument("--no-camera", action="store_true",
+                    help="ablate the camera-motion correction on velocities")
     ap.add_argument("--temporal", action="store_true",
                     help="include the time-averaged trajectory features; "
                          "off by default, see DROP_TEMPORAL")
@@ -197,6 +213,7 @@ def main():
 
     global DROP_TEMPORAL
     DROP_TEMPORAL = not args.temporal
+    dataset.set_camera(not args.no_camera)
     penalties = [float(x) for x in args.penalties.split(",")]
     dwells = [float(x) for x in str(args.dwell).split(",")]
     cache_specs = {Path(p).name: p for p in args.cache}
@@ -224,7 +241,7 @@ def main():
     chance_n, chance_d, total_true = 0.0, 0, 0
     cached = []
     for train, held in folds:
-        _, _, y_te, grp_te, tid_te = held["ds"]
+        _, _, y_te, grp_te, tid_te = held["ds"][:5]
         for t in np.unique(grp_te):
             chance_n += 1.0 / int((grp_te == t).sum())
             chance_d += 1

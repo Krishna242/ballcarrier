@@ -86,8 +86,10 @@ def main():
     ap.add_argument("--cache", nargs="+", default=["data/interim/cache"])
     ap.add_argument("--label", default="ea")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--no-camera", action="store_true")
     args = ap.parse_args()
 
+    dataset.set_camera(not args.no_camera)
     shots = dataset.load_many({Path(p).name: p for p in args.cache})
 
     totals = {k: [0, 0] for k in PREDICTORS}
