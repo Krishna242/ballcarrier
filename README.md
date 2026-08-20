@@ -1,175 +1,198 @@
 # ballcarrier
 
 Identifying which player is carrying the ball, frame by frame, in NFL Blitz
-gameplay video — and measuring how well that actually works.
+gameplay video — and measuring, honestly, how far that gets you.
 
 ## Answer
 
-**Partly, and not reliably enough to trust unsupervised.** On plays it has
-never seen, the model identifies the carrier on **63.1%** of live-play frames
-in the 2012 re-release (95% CI [0.55, 0.72]) against a 13.4% chance rate, and
-**67.3%** on 1997 arcade clips ([0.56, 0.79], chance 16.6%). That is roughly
-4.7× chance and roughly one frame in three wrong.
+**Partly.** On plays it has never seen, the model names the correct ball
+carrier on **55.6%** of live-play frames (95% CI [0.50, 0.61]) against a 15.4%
+chance rate — about 3.6× chance, measured over **21,997 frames across 112
+plays**.
 
-**Possession changes are not detected.** At the chosen operating point,
-precision is 0.26 over 31 true events — three of every four announced
-turnovers are false. No setting of the decode gives usable precision and
-recall together.
+**Possession changes now work well enough to be worth reporting.** Precision
+**0.57** at recall 0.32 over **860** true events. In the previous iteration
+this was precision 0.17 over 4 events, which was not a measurement so much as
+a rounding artefact.
 
 The project's founding claim — that possession is recoverable from
-trajectories alone — is **not supported**. Trajectory features reach 35.3%;
-features describing only where the camera has put a player on screen reach
-50.8%. The camera, which follows the ball, carries more of the answer than the
-motion does.
+trajectories alone — is **still not supported**. Trajectory features reach
+34.9%; features describing only where the camera has put a player on screen
+reach 47.3%. The camera follows the ball, and framing carries more of the
+answer than the motion does.
 
 ![results](docs/results_card.png)
 
-Demo overlays for the four 1997 arcade clips are in [`docs/demo/`](docs/demo).
-Each is drawn by a model trained on the 2012 footage plus the *other three*
-clips, never on the clip being drawn. Amber is the prediction, green marks the
-game's own indicator, and the box turns red and says `<- wrong` whenever the
-two disagree — so the failures are as visible as the successes.
+## Read the accuracy number carefully
+
+An earlier version of this README reported **72.6%**, and that figure was worse
+than this one despite being larger. It was measured on four short clips — 344
+frames, three of which trained the model that scored the fourth — with a
+confidence interval of [0.63, 0.86]. The number here rests on 112 independent
+plays from two 18-minute captures, and its interval is ±5 points.
+
+Accuracy on a small, homogeneous test set is not comparable to accuracy on a
+large, varied one. The honest summary is that the earlier number was never
+that good; we just could not see how uncertain it was.
 
 ## How the labels exist at all
 
-NFL Blitz draws a blue ellipse under the player under user control, in both the
-1997 arcade original and the 2012 re-release. `src/hud.py` finds it, which
-yields a carrier label on every frame for free — no manual annotation. That is
-the only reason this question is answerable at this scale.
+NFL Blitz draws a blue ellipse on the turf beneath the player under user
+control. `src/hud.py` finds it, which yields a carrier label on every frame,
+automatically, for as much footage as we record. That is what makes the
+question answerable at this scale.
 
-The label is a *proxy*: it marks the controlled player, not provably the ball
-carrier. `scripts/audit_sample.py` drew 36 uniformly random labelled frames at
-native resolution and they were inspected one by one. On every live-play frame
-where the ball was visible, the reticle was on the player holding it. The
-failures were all of one kind — pre-snap and post-tackle frames, where the
-reticle marks a *selected* player and "ball carrier" is not defined. Hence the
-live-play gate.
+**The reticle is an answer key, not a model input.** The model never sees it.
+It supervises training and scores predictions, nothing more — a model allowed
+to see it would be perfectly accurate and would have learned nothing, and real
+broadcast football has no reticle at all.
 
-Four detector bugs were found by looking at frames rather than at metrics, and
-every one of them had been reporting success:
+The label is a proxy: it marks the *controlled* player. It equals the ball
+carrier during offensive live play — verified by drawing 36 uniformly random
+labelled frames at native resolution and inspecting each one — and it does not
+equal the carrier before the snap, after the whistle, or on defensive
+possessions. The first two are excluded by `evaluate.play_mask`. **The third is
+untested: all footage here is offensive possession**, so we cannot say whether
+the model has learned "who has the ball" or "who is the human playing."
+
+### Detector defects found by looking at frames, not metrics
+
+Every one produced confident output, and none was visible in any number:
 
 | symptom | cause |
 |---|---|
 | carrier jumps mid-play | the blue **line of scrimmage** painted on the turf crosses every player's feet, satisfying the "at a player's feet" anchor |
 | carrier jumps to the corner | the **TURBO bar**, whenever a player ran in front of it |
-| static-HUD suppression never fired | threshold was 0.60; the highest occupancy anywhere in 9,764 frames is **0.592**, so the mask was empty and the filter was inert from the day it was written |
-| tackled carriers lost their label | detection at `conf=0.35/imgsz=960` missed players in a pile — exactly when possession is most in doubt. One arcade frame found 1 of 4 visible players, and the missing one had the ball |
+| static-HUD suppression never fired | threshold 0.60 against a frame maximum of **0.592** — the mask was always empty and the filter was inert from the day it was written |
+| tackled carriers lost their label | detection at `conf=0.35/imgsz=960` missed players in a pile, exactly when possession is most in doubt |
+| label on the wrong player | reticle→track assignment accepted any box horizontally containing the reticle, then minimised vertical distance alone. With the reticle between two players, a small distant box could beat the large near one. Fixed; corrected 213 labels in the 2012 cache and 22 across the clips |
+| 0.8% hit rate on a new capture | that source renders the indicator as a blue-and-yellow **checkered ring**, which the colour mask shatters into crescents |
 
 ## Where the numbers apply
 
 A frame is scored only if the field is on camera, players are in motion, a
-label exists, and at least three players are tracked to choose between. That
-last condition has to apply to the baselines and the model alike or their
-accuracies are quoted over different footage; `dataset.scored_mask` enforces it
-in one place.
+label exists, and at least three players are tracked. `dataset.scored_mask`
+applies that identically to every method, so accuracies are comparable.
 
 Possession changes are defined **spatially** — the indicator jumps more than a
-player's width, to a *different* tracked player — never as "the label's track
-id changed". A tracker reassigns ids to the same player constantly, and
-counting those as turnovers invents dozens per play.
+player's width to a *different* tracked player — never as "the label's track id
+changed". Trackers reassign ids constantly and each would count as a turnover.
 
 ## Results
 
-Two sources. Development is the 2012 Xbox Live Arcade re-release: 163s,
-1280×720/60fps, 12 usable shots. Test is four clips of the **1997 arcade
-original**, 1356×1016/30fps — different sprites, teal field, different camera.
-Thresholds were read off the first and are rescaled for the second by
-`evaluate.scales`, which separates spatial scale from frame rate because they
-pull in opposite directions.
-
-**Held out by shot, never by frame.** Adjacent frames of one play are nearly
-the same picture; a random frame split lets a model memorise a play and be
-tested on it.
-
-### Per-frame carrier accuracy
-
-| | 2012, leave-one-shot-out | 1997 arcade, cross-domain | 1997 arcade, leave-one-clip-out |
+| source | frames | plays | role |
 |---|---|---|---|
-| chance | 0.134 | 0.166 | 0.166 |
-| prior hand-built heuristic | 0.117 | 0.235 | — |
-| fastest player | 0.128 | 0.186 | — |
-| lowest on screen | 0.299 | **0.581** | — |
-| nearest frame centre | 0.343 | 0.273 | — |
-| learned, trajectory only | 0.353 | 0.541 | 0.600 |
-| learned, screen position only | 0.508 | 0.476 | 0.532 |
-| **learned, both** | **0.631** [0.55, 0.72] | **0.550** [0.37, 0.76] | **0.673** [0.56, 0.79] |
+| 1997 arcade, two 18-min captures | 22,722 scored | 112 | development + evaluation |
+| 1997 arcade, four short clips | 344 scored | 4 | small held-out set |
+| 2012 XBLA re-release, 163s | 3,787 scored | 12 | earlier development source |
 
-3,787 scored frames (2012) and 340 (arcade). Intervals are shot-level
-bootstraps — the shot is the unit that varies, not the frame.
+Only 14–22% of the long captures yield labels: much of each is attract-mode
+demo play, where no one is in control and no indicator is drawn.
 
-Cross-domain means no arcade footage was in training at all. Leave-one-clip-out
-means the held-out clip is still never trained on, but its three siblings are —
-what a deployed system would actually have. Per clip: 83.7%, 57.6%, 72.3%,
-55.9%.
+### Per-frame accuracy, 8-fold grouped CV over 112 plays
 
-### Possession changes
+| method | accuracy | vs chance (0.154) |
+|---|---|---|
+| trajectories only | 0.349 | 2.3× |
+| screen position only | 0.473 | 3.1× |
+| both | 0.546 | 3.5× |
+| **both + ball appearance** | **0.556** [0.50, 0.61] | **3.6×** |
 
-31 ground-truth events. The switch penalty trades one failure for the other
-and never gets both:
+### Baselines, on exactly the same 112 plays
 
-| penalty | accuracy | change precision | change recall |
+| method | accuracy | vs chance |
+|---|---|---|
+| prior hand-built heuristic | 0.152 | 0.98× — at chance |
+| fastest player | 0.179 | 1.15× |
+| nearest frame centre | 0.263 | 1.69× |
+| lowest player on screen | 0.275 | 1.77× |
+| **learned model** | **0.556** | **3.60×** |
+
+This is the first evaluation where the learned model decisively beats the
+trivial rules. On the four short clips, "lowest player on screen" scored 0.581
+and *beat* the cross-domain model — but on 112 plays it manages 0.275. The
+baseline was winning on a small, homogeneous test set rather than on the task.
+
+### The same model under harder splits
+
+| split | test frames | accuracy | what it tells you |
 |---|---|---|---|
-| 0.0 | 0.599 | 0.08 | 0.90 |
-| 3.0 *(chosen)* | 0.631 | 0.26 | 0.48 |
-| 10.0 | 0.663 | 0.30 | 0.32 |
+| 8-fold CV, both captures pooled | 21,997 | **0.556** | the headline; tightest interval |
+| leave-one-play-out within one capture | 8,377 | 0.589 | same capture, unseen play |
+| train capture 1 → test capture 2 | 13,611 | 0.478 | a wholly unseen recording |
+| train capture 1 → test the 4 clips | 337 | 0.608 | different resolution and frame rate |
 
-Accuracy keeps rising with the penalty, but only by refusing to switch at all.
-The operating point is fixed at 3.0 on the development source and applied
-unchanged to the arcade clips.
-
-### Two ideas that were tried and did not work
-
-Both are kept in the code behind flags, because a negative result that is
-deleted gets re-proposed.
-
-- **Minimum dwell time** (`carrier.enforce_dwell`, `--dwell`). A hard floor on
-  how long a carrier must be held, aimed at flicker. It raises change precision
-  from 0.09 to 0.31 and costs recall 0.97 → 0.32, and it lowers accuracy at
-  *every* penalty setting. Not used.
-- **Half-second trajectory averages** (`--temporal`). Added on the theory that
-  a single frame cannot separate a carrier from a lead blocker while half a
-  second of pursuit can. They lift the trajectory-only model (0.353 → 0.371)
-  and cost the combined model (0.631 → 0.607). Off by default.
+Accuracy falls to 0.478 across two different captures of the same game. That
+gap is the honest measure of how well this travels.
 
 ### Tracking stability
 
-The carrier's track id changes on 3.7% of 2012 frames and 10.7% of arcade
-frames where the carrier did not change. Detection and tracking are not the
-bottleneck on the 2012 footage; deciding *which* box is the carrier is.
+The carrier's track id changes on **8.7%** of frames where the carrier did not
+change (1,906 of 21,786). Higher than the 3.7% measured on the 2012 footage,
+and it puts a ceiling on how stable any identity this pipeline emits can be.
+
+### Possession changes
+
+| split | events | precision | recall |
+|---|---|---|---|
+| pooled, 112 plays | 860 | **0.567** | 0.305 |
+| within one capture | 408 | 0.573 | 0.368 |
+| across captures | 452 | 0.484 | 0.296 |
+
+Usable, not solved. Roughly two in five announced changes are still false, and
+two thirds of real ones are missed.
+
+### Four ideas measured; two earned their place
+
+Kept behind flags either way, because a deleted negative result gets
+re-proposed.
+
+- **Ball appearance** (`--` on by default). Scoring every candidate for a
+  football in their hands, rather than only the player already chosen. It
+  *cost* accuracy at 340 training frames (0.726 → 0.709) and *gains* it at
+  22,000 (0.546 → 0.556). A feature can be worth having only once there is
+  enough data to fit it.
+- **Camera-motion correction** (`--no-camera` to disable). Velocities are
+  measured in screen pixels, so a pan makes every player appear to accelerate.
+  On the four clips it lifted trajectory-only accuracy 0.612 → 0.724, the
+  largest single movement in the project. Pooled at scale it is neutral:
+  0.556 against 0.561. Worth keeping for high-motion footage, not a general win.
+- **Minimum dwell time** (`--dwell`). Raises change precision 0.09 → 0.31,
+  costs recall 0.97 → 0.32, and lowers accuracy at every penalty. Not used.
+- **Half-second trajectory averages** (`--temporal`). Helps trajectory-only,
+  costs the combined model. Off by default.
 
 ## Pipeline
-
-```
-video ──► shot cuts ──► detect + track ──► trajectories ──┐
-             │                                            ├─► score ─► decode ─► carrier
-      refuse to reason          HUD reticle ──► labels ───┘       possession is
-      across a cut                                                piecewise constant
-```
 
 | module | concern |
 |---|---|
 | `src/segment.py` | camera cuts, and where the play snaps |
 | `src/tracking.py` | detection, association, trajectories |
 | `src/hud.py` | harvesting carrier labels from the on-screen indicator |
-| `src/features.py` | candidate features, split into trajectory vs. screen position |
+| `src/camera.py` | frame-to-frame camera motion, so velocity means player motion |
+| `src/ball.py` | localising the football inside a candidate's hands |
+| `src/features.py` | candidate features: trajectory / position / appearance |
 | `src/carrier.py` | the original heuristic, Viterbi decode, dwell constraint |
-| `src/evaluate.py` | the evaluation domain, the metrics, per-clip scaling |
+| `src/evaluate.py` | the evaluation domain, metrics, per-clip scaling |
 | `src/dataset.py` | cache loading, the scored-frame rule, the candidate set |
 
 ## Run it
 
 ```bash
-# 1. cache detections, tracks and harvested labels (the only slow step)
-python scripts/harvest_video.py --video path/to.mp4 --out data/interim/cache
+# 0. is a new video usable at all? 90 seconds, before committing an hour
+python scripts/probe_source.py --video path/to.mp4
 
-# 2. every number in this README
-python scripts/reproduce.py
+# 1. cache detections, tracks and harvested labels (the only slow step)
+python scripts/harvest_video.py --video path/to.mp4 --out data/interim/full/vid1
+python scripts/estimate_camera.py --cache data/interim/full/vid1
+python scripts/ball_evidence.py  --cache data/interim/full/vid1
+
+# 2. the headline number
+python scripts/train_eval.py --cache data/interim/full/vid1 data/interim/full/vid2 \
+    --folds 8 --penalties 3.0 --dwell 0.0
 
 # 3. demo overlays, each clip drawn by a model that never saw it
 python scripts/make_demos.py
-
-# 4. the summary figure above
-python scripts/results_card.py
 ```
 
 `scripts/audit_sample.py` and `scripts/audit_changes.py` render the images the
@@ -178,21 +201,26 @@ before believing any number above.
 
 ## What these numbers do not cover
 
-- **One development video.** 163 seconds, one matchup, one camera style. Twelve
-  shots is twelve effective samples, which is why the intervals are wide.
-- **The arcade result rests on 340 frames** across four clips. It shows the
-  approach survives a change of game generation; it does not establish an
-  accuracy to two significant figures.
-- **31 possession-change events** is too few to characterise change detection
-  beyond "it does not work yet".
-- **Labels are the controlled player**, audited as equal to the ball carrier on
-  live-play frames, not proven equal on every frame.
-- **On the arcade clips a one-line baseline — lowest player on screen — scores
-  0.581 against the learned model's cross-domain 0.550.** With in-domain peers
-  the model reaches 0.673 and pulls ahead, but on genuinely unseen footage it
-  does not beat sorting by screen position.
+- **Offence only.** On a defensive possession the indicator marks a defender,
+  not the carrier. No such footage exists in this dataset, so the model may
+  have learned "who is under user control" rather than "who has the ball" —
+  indistinguishable in the data we have. Thirty seconds of defensive play
+  would settle it and is the cheapest experiment left.
+- **One game, two captures.** Transfer across captures already costs 8 points
+  (0.556 → 0.478). Transfer to real broadcast football is untested and is the
+  claim the method is ultimately aiming at.
+- **Recall on possession changes is 0.31.** Two thirds of real changes are
+  missed.
+- **Labels are the controlled player**, audited as equal to the carrier on
+  offensive live play, not proven equal on every frame.
 
-## Not used
+## Prior work
 
-Roughly 400 timestamped action annotations exist from earlier work. They record
-*when* something happened; this is a spatial question about *which* player.
+The premise — inferring possession from player trajectories without tracking
+the ball — follows **PathCRF** ([arXiv:2602.12080](https://arxiv.org/abs/2602.12080),
+Kim et al., 2026), which detects on-ball soccer events from tracking data by
+selecting a possession edge per timestep under a CRF. Two differences matter:
+PathCRF consumes already-extracted tracking coordinates while this works from
+raw pixels, and it selects an *edge* — making a possession change its native
+output — where this selects a *node* per frame and recovers changes as a side
+effect. That is the likeliest reason change recall here remains low.

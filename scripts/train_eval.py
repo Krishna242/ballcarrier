@@ -175,13 +175,30 @@ def bootstrap_ci(per_shot, iters=2000, seed=0):
             float(np.nanpercentile(out, 97.5)))
 
 
+_FIT_CACHE = {}
+
+
 def score_fold(train, test_shot, model_kind):
-    """Fit on `train`, return log-probabilities for `test_shot` per feature set."""
+    """Fit on `train`, return log-probabilities for `test_shot` per feature set.
+
+    Fits are memoised on the identity of the training set. In the --test
+    regimes every fold trains on exactly the same shots and differs only in
+    which clip is being scored, so without this the same model is refitted
+    once per test shot -- 73 times over, for vid1 -> vid2.
+    """
+    key = (model_kind, tuple(sorted(s["key"] for s in train)), DROP_TEMPORAL)
+    models = _FIT_CACHE.get(key)
+    if models is None:
+        models = {}
+        for name, which in SETS.items():
+            X, y = stack(train, which)
+            models[name] = make_model(model_kind).fit(X, y)
+        _FIT_CACHE.clear()          # one training set in flight at a time
+        _FIT_CACHE[key] = models
+
     out = {}
     for name, which in SETS.items():
-        X, y = stack(train, which)
-        m = make_model(model_kind).fit(X, y)
-        p = m.predict_proba(features_of(test_shot, which))[:, 1]
+        p = models[name].predict_proba(features_of(test_shot, which))[:, 1]
         out[name] = np.log(np.clip(p, 1e-6, 1 - 1e-6))
     return out
 
@@ -197,6 +214,11 @@ def main():
     ap.add_argument("--include-test-in-train", action="store_true",
                     help="also train on the test source, minus the held-out "
                          "clip. Leave-one-clip-out rather than cross-domain.")
+    ap.add_argument("--folds", type=int, default=0,
+                    help="group shots into K cross-validation folds instead "
+                         "of leave-one-shot-out. Per-shot results are still "
+                         "recorded, so the bootstrap keeps every shot as its "
+                         "own unit while only K models are fitted.")
     ap.add_argument("--no-camera", action="store_true",
                     help="ablate the camera-motion correction on velocities")
     ap.add_argument("--temporal", action="store_true",
@@ -232,6 +254,14 @@ def main():
             folds = [(base, s) for s in test_pool]
             regime = (f"cross-domain: train={args.cache} -> "
                       f"{len(test_pool)} held-out clips, no in-domain data")
+    elif args.folds and args.folds < len(base):
+        groups = [base[i::args.folds] for i in range(args.folds)]
+        folds = []
+        for g in groups:
+            keep = [o for o in base if o not in g]
+            folds.extend((keep, s) for s in g)
+        regime = (f"{args.folds}-fold grouped CV within {list(cache_specs)} "
+                  f"({len(base)} shots)")
     else:
         folds = [([o for o in base if o is not s], s) for s in base]
         regime = f"leave-one-shot-out within {list(cache_specs)}"

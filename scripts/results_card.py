@@ -16,7 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-W, H = 1660, 900
+W, H = 1660, 960
 BG = (26, 29, 31)
 FG = (238, 240, 238)
 MUTE = (146, 152, 150)
@@ -53,11 +53,11 @@ def main():
     args = ap.parse_args()
 
     d = Path(args.dir)
-    ea_base = load(d / "eval_ea.json", {})
-    arc_base = load(d / "eval_arcade.json", {})
-    ea = load(d / "model_eval_ea.json", {})
-    cross = load(d / "model_eval_arcade_crossdomain.json", {})
-    loco = load(d / "model_eval_arcade_loco.json", {})
+    ea_base = load(d / "eval_pooled.json", {})   # same footage as the headline
+    pooled = load(d / "model_eval_pooled_nocam.json", {})
+    within = load(d / "model_eval_vid1_loso.json", {})
+    across = load(d / "model_eval_v1_to_v2.json", {})
+    clips = load(d / "model_eval_vid1_to_clips.json", {})
 
     img = np.full((H, W, 3), BG, np.uint8)
     text(img, "Ball carrier identification in NFL Blitz", 50, 66, 1.0, FG, F)
@@ -83,18 +83,18 @@ def main():
         return None
 
     rows = []
-    if ea:
-        r = get(ea)
-        rows.append(("2012 re-release, leave-one-shot-out",
-                     r, ea.get("chance"), "12 shots / 163s"))
-    if cross:
-        r = get(cross)
-        rows.append(("1997 arcade, no in-domain training",
-                     r, cross.get("chance"), "4 clips, cross-generation"))
-    if loco:
-        r = get(loco)
-        rows.append(("1997 arcade, leave-one-clip-out",
-                     r, loco.get("chance"), "4 clips, in-domain peers"))
+    if pooled:
+        rows.append(("Pooled, 8-fold CV over 112 plays", get(pooled),
+                     pooled.get("chance"), "21,997 frames -- the headline"))
+    if within:
+        rows.append(("Held-out play, same capture", get(within),
+                     within.get("chance"), "8,377 frames / 37 plays"))
+    if across:
+        rows.append(("Held-out capture entirely", get(across),
+                     across.get("chance"), "13,611 frames / 73 plays"))
+    if clips:
+        rows.append(("Held-out clips, different resolution", get(clips),
+                     clips.get("chance"), "337 frames / 4 clips"))
 
     y = 160
     text(img, "PER-FRAME CARRIER ACCURACY", 50, y, 0.62, ACCENT, F)
@@ -112,19 +112,22 @@ def main():
         y += 74
 
     y += 16
-    text(img, "WHERE THE SIGNAL COMES FROM  (2012, leave-one-shot-out)",
+    text(img, "WHERE THE SIGNAL COMES FROM  (pooled, 112 plays)",
          50, y, 0.62, ACCENT, F)
     y += 38
-    if ea:
+    if pooled:
         for fs, label in [("traj", "trajectories only  (the original claim)"),
                           ("pos", "screen position only  (the camera)"),
-                          ("both", "both")]:
-            r = get(ea, fs)
+                          ("both", "both"),
+                          ("both+ball", "both + ball appearance")]:
+            r = get(pooled, fs)
             if not r:
                 continue
-            text(img, label, 70, y + 20, 0.54, FG if fs == "both" else MUTE)
+            text(img, label, 70, y + 20, 0.54,
+                 FG if fs.startswith("both") else MUTE)
             bar(img, 620, y + 2, 560, 24, r["accuracy"],
-                ACCENT if fs == "both" else MUTE, ea.get("chance"))
+                ACCENT if fs.startswith("both") else MUTE,
+                pooled.get("chance"))
             text(img, f"{r['accuracy']:.1%}", 1200, y + 21, 0.6, FG, F)
             y += 40
 
@@ -148,12 +151,13 @@ def main():
         y += 38
 
     y += 12
-    chg = get(ea)
+    chg = get(pooled)
     if chg:
         c = chg["changes"]
         text(img, f"Possession changes: precision {c['precision']:.2f}, "
-                  f"recall {c['recall']:.2f} over {ea.get('true_changes', 0)} "
-                  f"true events -- not usable.", 50, y + 20, 0.56, BAD)
+                  f"recall {c['recall']:.2f} over "
+                  f"{pooled.get('true_changes', 0)} true events -- usable, "
+                  f"not solved.", 50, y + 20, 0.56, GOOD)
 
     cv2.imwrite(str(args.out), img)
     print(f"wrote {args.out}")

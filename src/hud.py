@@ -206,8 +206,17 @@ def harvest(frames, per_frame_boxes=None):
 def assign_to_track(reticle, per_frame_boxes, scale=1.0):
     """Map each reticle hit to the player track it sits beneath.
 
-    The reticle is drawn at the player's feet, so we score boxes by horizontal
-    containment and vertical proximity of the box bottom.
+    The reticle is drawn centred on the player's ground contact point, so the
+    match is to the nearest box *bottom-centre* -- the same point the rest of
+    the pipeline uses as a player's position.
+
+    The earlier rule accepted any box horizontally containing the reticle and
+    then minimised vertical distance alone. Audit of a new source found that
+    failing exactly where it matters: with the reticle sitting between two
+    players, a small distant box whose bottom happened to align in y won over
+    the large near one the reticle was actually drawn under. Horizontal
+    distance carries real information here and was being discarded once the
+    containment test passed.
     """
     pad, max_d = 20 * scale, 60 * scale
     labels = []
@@ -220,7 +229,9 @@ def assign_to_track(reticle, per_frame_boxes, scale=1.0):
         for tid, (x1, _, x2, y2) in per_frame_boxes[t].items():
             if not (x1 - pad <= cx <= x2 + pad):
                 continue
-            d = abs(y2 - cy)
+            # Vertical distance still dominates -- the reticle is at the feet,
+            # not the waist -- but ties now break toward the nearer player.
+            d = abs(y2 - cy) + 0.5 * abs((x1 + x2) / 2.0 - cx)
             if d < best_d:
                 best, best_d = tid, d
         labels.append(best if best_d < max_d else None)
