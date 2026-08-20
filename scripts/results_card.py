@@ -54,7 +54,7 @@ def main():
 
     d = Path(args.dir)
     ea_base = load(d / "eval_pooled.json", {})   # same footage as the headline
-    pooled = load(d / "model_eval_pooled_nocam.json", {})
+    pooled = load(d / "model_eval_pooled_cam.json", {})
     within = load(d / "model_eval_vid1_loso.json", {})
     across = load(d / "model_eval_v1_to_v2.json", {})
     clips = load(d / "model_eval_vid1_to_clips.json", {})

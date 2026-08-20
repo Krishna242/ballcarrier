@@ -117,7 +117,7 @@ baseline was winning on a small, homogeneous test set rather than on the task.
 
 | split | test frames | accuracy | what it tells you |
 |---|---|---|---|
-| 8-fold CV, both captures pooled | 21,997 | **0.556** | the headline; tightest interval |
+| 8-fold CV, both captures pooled | 21,997 | **0.563** | the headline; tightest interval |
 | leave-one-play-out within one capture | 8,377 | 0.589 | same capture, unseen play |
 | train capture 1 → test capture 2 | 13,611 | 0.478 | a wholly unseen recording |
 | train capture 1 → test the 4 clips | 337 | 0.608 | different resolution and frame rate |
